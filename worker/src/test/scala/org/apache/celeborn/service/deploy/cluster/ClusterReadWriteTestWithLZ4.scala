@@ -25,4 +25,15 @@ class ClusterReadWriteTestWithLZ4 extends ReadWriteTestBase {
     testReadWriteByCode(CompressionCodec.LZ4)
   }
 
+  test(s"test MiniCluster") {
+    val masterConf = Map(
+      "celeborn.master.host" -> "localhost",
+      "celeborn.master.port" -> masterPort.toString)
+    val workerConf = Map(
+      "celeborn.master.endpoints" -> s"localhost:$masterPort")
+    logInfo("test initialized , setup Celeborn mini cluster")
+    setUpMiniCluster(masterConf,workerConf)
+    scala.io.StdIn.readLine()
+  }
+
 }
