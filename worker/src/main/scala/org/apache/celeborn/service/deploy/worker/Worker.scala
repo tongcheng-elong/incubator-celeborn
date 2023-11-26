@@ -51,6 +51,7 @@ import org.apache.celeborn.service.deploy.worker.WorkerSource.ACTIVE_CONNECTION_
 import org.apache.celeborn.service.deploy.worker.congestcontrol.CongestionController
 import org.apache.celeborn.service.deploy.worker.memory.{ChannelsLimiter, MemoryManager}
 import org.apache.celeborn.service.deploy.worker.memory.MemoryManager.ServingState
+import org.apache.celeborn.service.deploy.worker.monitor.JVMQuake
 import org.apache.celeborn.service.deploy.worker.storage.{PartitionFilesSorter, StorageManager}
 
 private[celeborn] class Worker(
@@ -275,6 +276,12 @@ private[celeborn] class Worker(
   private val userResourceConsumptions =
     JavaUtils.newConcurrentHashMap[UserIdentifier, (ResourceConsumption, Long)]()
 
+  private var jvmQuake: JVMQuake = _
+  if (conf.workerJvmQuakeEnabled) {
+    jvmQuake = JVMQuake.create(conf, workerInfo.toUniqueId().replace(":", "-"))
+    jvmQuake.start()
+  }
+
   workerSource.addGauge(WorkerSource.REGISTERED_SHUFFLE_COUNT) { () =>
     workerInfo.getShuffleKeySet.size
   }
@@ -343,7 +350,7 @@ private[celeborn] class Worker(
     val diskInfos =
       workerInfo.updateThenGetDiskInfos(storageManager.disksSnapshot().map { disk =>
         disk.mountPoint -> disk
-      }.toMap.asJava).values().asScala.toSeq
+      }.toMap.asJava).values().asScala.toSeq ++ storageManager.hdfsDiskInfo
     val response = masterClient.askSync[HeartbeatFromWorkerResponse](
       HeartbeatFromWorker(
         host,
@@ -431,6 +438,9 @@ private[celeborn] class Worker(
     if (!stopped) {
       logInfo("Stopping Worker.")
 
+      if (jvmQuake != null) {
+        jvmQuake.stop()
+      }
       if (sendHeartbeatTask != null) {
         if (exitKind == CelebornExitKind.WORKER_GRACEFUL_SHUTDOWN) {
           sendHeartbeatTask.cancel(false)
