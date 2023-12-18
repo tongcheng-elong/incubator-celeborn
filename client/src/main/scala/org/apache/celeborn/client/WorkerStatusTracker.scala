@@ -17,7 +17,7 @@
 
 package org.apache.celeborn.client
 
-import java.util.{HashSet => JHashSet, List => JList, Set => JSet}
+import java.util.{HashSet => JHashSet, Set => JSet}
 import java.util.concurrent.ConcurrentHashMap
 
 import scala.collection.JavaConverters._
@@ -50,6 +50,10 @@ class WorkerStatusTracker(
     } else {
       excludedWorkers.asScala.keys.toSet ++ shuttingWorkers.asScala.toSet
     }
+  }
+
+  def workerExcluded(worker: WorkerInfo): Boolean = {
+    excludedWorkers.containsKey(worker)
   }
 
   def workerAvailable(worker: WorkerInfo): Boolean = {

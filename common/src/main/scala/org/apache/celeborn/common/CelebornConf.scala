@@ -512,6 +512,11 @@ class CelebornConf(loadDefaults: Boolean) extends Cloneable with Logging with Se
 
   def maxDefaultNettyThreads: Int = get(MAX_DEFAULT_NETTY_THREADS)
 
+  def networkIoSaslTimoutMs(module: String): Int = {
+    val key = NETWORK_IO_SASL_TIMEOUT.key.replace("<module>", module)
+    getTimeAsMs(key, s"${networkTimeout.duration.toMillis}ms").toInt
+  }
+
   // //////////////////////////////////////////////////////
   //                      Master                         //
   // //////////////////////////////////////////////////////
@@ -744,7 +749,6 @@ class CelebornConf(loadDefaults: Boolean) extends Cloneable with Logging with Se
   def clientReserveSlotsRetryWait: Long = get(CLIENT_RESERVE_SLOTS_RETRY_WAIT)
   def clientRequestCommitFilesMaxRetries: Int = get(CLIENT_COMMIT_FILE_REQUEST_MAX_RETRY)
   def clientCommitFilesIgnoreExcludedWorkers: Boolean = get(CLIENT_COMMIT_IGNORE_EXCLUDED_WORKERS)
-  def clientRpcMaxParallelism: Int = get(CLIENT_RPC_MAX_PARALLELISM)
   def appHeartbeatTimeoutMs: Long = get(APPLICATION_HEARTBEAT_TIMEOUT)
   def hdfsExpireDirsTimeoutMS: Long = get(HDFS_EXPIRE_DIRS_TIMEOUT)
   def appHeartbeatIntervalMs: Long = get(APPLICATION_HEARTBEAT_INTERVAL)
@@ -825,6 +829,8 @@ class CelebornConf(loadDefaults: Boolean) extends Cloneable with Logging with Se
   def clientPushStageEndTimeout: Long = get(CLIENT_PUSH_STAGE_END_TIMEOUT)
   def clientPushUnsafeRowFastWrite: Boolean = get(CLIENT_PUSH_UNSAFEROW_FASTWRITE_ENABLED)
   def clientRpcCacheExpireTime: Long = get(CLIENT_RPC_CACHE_EXPIRE_TIME)
+  def clientRpcSharedThreads: Int = get(CLIENT_RPC_SHARED_THREADS)
+  def clientRpcMaxRetries: Int = get(CLIENT_RPC_MAX_RETIRES)
   def pushDataTimeoutMs: Long = get(CLIENT_PUSH_DATA_TIMEOUT)
   def clientPushLimitStrategy: String = get(CLIENT_PUSH_LIMIT_STRATEGY)
   def clientPushSlowStartInitialSleepTime: Long = get(CLIENT_PUSH_SLOW_START_INITIAL_SLEEP_TIME)
@@ -879,6 +885,9 @@ class CelebornConf(loadDefaults: Boolean) extends Cloneable with Logging with Se
   def enableReadLocalShuffleFile: Boolean = get(READ_LOCAL_SHUFFLE_FILE)
   def readLocalShuffleThreads: Int = get(READ_LOCAL_SHUFFLE_THREADS)
   def readStreamCreatorPoolThreads: Int = get(READ_STREAM_CREATOR_POOL_THREADS)
+
+  def registerShuffleFilterExcludedWorkerEnabled: Boolean =
+    get(REGISTER_SHUFFLE_FILTER_EXCLUDED_WORKER_ENABLED)
 
   // //////////////////////////////////////////////////////
   //                       Worker                        //
@@ -1073,7 +1082,8 @@ class CelebornConf(loadDefaults: Boolean) extends Cloneable with Logging with Se
   //                      test                           //
   // //////////////////////////////////////////////////////
   def testFetchFailure: Boolean = get(TEST_CLIENT_FETCH_FAILURE)
-  def testRetryCommitFiles: Boolean = get(TEST_CLIENT_RETRY_COMMIT_FILE)
+  def testMockDestroySlotsFailure: Boolean = get(TEST_CLIENT_MOCK_DESTROY_SLOTS_FAILURE)
+  def testMockCommitFilesFailure: Boolean = get(TEST_CLIENT_MOCK_COMMIT_FILES_FAILURE)
   def testPushPrimaryDataTimeout: Boolean = get(TEST_CLIENT_PUSH_PRIMARY_DATA_TIMEOUT)
   def testPushReplicaDataTimeout: Boolean = get(TEST_WORKER_PUSH_REPLICA_DATA_TIMEOUT)
   def testRetryRevive: Boolean = get(TEST_CLIENT_RETRY_REVIVE)
@@ -3032,13 +3042,21 @@ object CelebornConf extends Logging {
       .booleanConf
       .createWithDefault(false)
 
-  val TEST_CLIENT_RETRY_COMMIT_FILE: ConfigEntry[Boolean] =
-    buildConf("celeborn.test.client.retryCommitFiles")
-      .withAlternative("celeborn.test.retryCommitFiles")
+  val TEST_CLIENT_MOCK_DESTROY_SLOTS_FAILURE: ConfigEntry[Boolean] =
+    buildConf("celeborn.test.client.mockDestroySlotsFailure")
       .internal
       .categories("test", "client")
-      .doc("Fail commitFile request for test")
-      .version("0.3.0")
+      .doc("Fail destroy slots request for test")
+      .version("0.3.2")
+      .booleanConf
+      .createWithDefault(false)
+
+  val TEST_CLIENT_MOCK_COMMIT_FILES_FAILURE: ConfigEntry[Boolean] =
+    buildConf("celeborn.test.client.mockCommitFilesFailure")
+      .internal
+      .categories("test", "client")
+      .doc("Fail commit files request for test")
+      .version("0.3.2")
       .booleanConf
       .createWithDefault(false)
 
@@ -3624,15 +3642,6 @@ object CelebornConf extends Logging {
       .version("0.3.0")
       .fallbackConf(NETWORK_IO_CONNECTION_TIMEOUT)
 
-  val CLIENT_RPC_MAX_PARALLELISM: ConfigEntry[Int] =
-    buildConf("celeborn.client.rpc.maxParallelism")
-      .withAlternative("celeborn.rpc.maxParallelism")
-      .categories("client")
-      .version("0.3.0")
-      .doc("Max parallelism of client on sending RPC requests.")
-      .intConf
-      .createWithDefault(1024)
-
   val CLIENT_RESERVE_SLOTS_RPC_TIMEOUT: ConfigEntry[Long] =
     buildConf("celeborn.client.rpc.reserveSlots.askTimeout")
       .categories("client")
@@ -3699,6 +3708,22 @@ object CelebornConf extends Logging {
       .doc("The time before a cache item is removed.")
       .timeConf(TimeUnit.MILLISECONDS)
       .createWithDefaultString("15s")
+
+  val CLIENT_RPC_SHARED_THREADS: ConfigEntry[Int] =
+    buildConf("celeborn.client.rpc.shared.threads")
+      .categories("client")
+      .version("0.3.2")
+      .doc("Number of shared rpc threads in LifecycleManager.")
+      .intConf
+      .createWithDefault(16)
+
+  val CLIENT_RPC_MAX_RETIRES: ConfigEntry[Int] =
+    buildConf("celeborn.client.rpc.maxRetries")
+      .categories("client")
+      .version("0.3.2")
+      .doc("Max RPC retry times in LifecycleManager.")
+      .intConf
+      .createWithDefault(3)
 
   val CLIENT_RESERVE_SLOTS_RACKAWARE_ENABLED: ConfigEntry[Boolean] =
     buildConf("celeborn.client.reserveSlots.rackaware.enabled")
@@ -4198,4 +4223,20 @@ object CelebornConf extends Logging {
       .doc("Interval for refreshing the corresponding dynamic config periodically.")
       .timeConf(TimeUnit.MILLISECONDS)
       .createWithDefaultString("120s")
+
+  val REGISTER_SHUFFLE_FILTER_EXCLUDED_WORKER_ENABLED: ConfigEntry[Boolean] =
+    buildConf("celeborn.client.shuffle.register.filterExcludedWorker.enabled")
+      .categories("client")
+      .version("0.4.0")
+      .doc("Whether to filter excluded worker when register shuffle.")
+      .booleanConf
+      .createWithDefault(false)
+
+  val NETWORK_IO_SASL_TIMEOUT: ConfigEntry[Long] =
+    buildConf("celeborn.<module>.io.saslTimeout")
+      .categories("network")
+      .doc("Timeout for a single round trip of auth message exchange, in milliseconds.")
+      .version("0.5.0")
+      .timeConf(TimeUnit.MILLISECONDS)
+      .createWithDefaultString("30s")
 }

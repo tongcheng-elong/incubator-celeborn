@@ -171,6 +171,7 @@ object ControlMessages extends Logging {
       userIdentifier: UserIdentifier,
       maxWorkers: Int,
       availableStorageTypes: Int,
+      excludedWorkerSet: Set[WorkerInfo] = Set.empty,
       override var requestId: String = ZERO_UUID)
     extends MasterRequestMessage
 
@@ -434,7 +435,8 @@ object ControlMessages extends Logging {
       primaryIds: util.List[String],
       replicaIds: util.List[String],
       mapAttempts: Array[Int],
-      epoch: Long)
+      epoch: Long,
+      var mockFailure: Boolean = false)
     extends WorkerMessage
 
   case class CommitFilesResponse(
@@ -455,7 +457,8 @@ object ControlMessages extends Logging {
   case class DestroyWorkerSlots(
       shuffleKey: String,
       primaryLocations: util.List[String],
-      replicaLocations: util.List[String])
+      replicaLocations: util.List[String],
+      var mockFailure: Boolean = false)
     extends WorkerMessage
 
   case class DestroyWorkerSlotsResponse(
@@ -555,6 +558,7 @@ object ControlMessages extends Logging {
           userIdentifier,
           maxWorkers,
           availableStorageTypes,
+          excludedWorkerSet,
           requestId) =>
       val payload = PbRequestSlots.newBuilder()
         .setApplicationId(applicationId)
@@ -567,6 +571,7 @@ object ControlMessages extends Logging {
         .setRequestId(requestId)
         .setAvailableStorageTypes(availableStorageTypes)
         .setUserIdentifier(PbSerDeUtils.toPbUserIdentifier(userIdentifier))
+        .addAllExcludedWorkerSet(excludedWorkerSet.map(PbSerDeUtils.toPbWorkerInfo(_, true)).asJava)
         .build().toByteArray
       new TransportMessage(MessageType.REQUEST_SLOTS, payload)
 
@@ -780,7 +785,14 @@ object ControlMessages extends Logging {
         .build().toByteArray
       new TransportMessage(MessageType.RESERVE_SLOTS_RESPONSE, payload)
 
-    case CommitFiles(applicationId, shuffleId, primaryIds, replicaIds, mapAttempts, epoch) =>
+    case CommitFiles(
+          applicationId,
+          shuffleId,
+          primaryIds,
+          replicaIds,
+          mapAttempts,
+          epoch,
+          mockFailure) =>
       val payload = PbCommitFiles.newBuilder()
         .setApplicationId(applicationId)
         .setShuffleId(shuffleId)
@@ -788,6 +800,7 @@ object ControlMessages extends Logging {
         .addAllReplicaIds(replicaIds)
         .addAllMapAttempts(mapAttempts.map(Integer.valueOf).toIterable.asJava)
         .setEpoch(epoch)
+        .setMockFailure(mockFailure)
         .build().toByteArray
       new TransportMessage(MessageType.COMMIT_FILES, payload)
 
@@ -820,11 +833,12 @@ object ControlMessages extends Logging {
       val payload = builder.build().toByteArray
       new TransportMessage(MessageType.COMMIT_FILES_RESPONSE, payload)
 
-    case DestroyWorkerSlots(shuffleKey, primaryLocations, replicaLocations) =>
+    case DestroyWorkerSlots(shuffleKey, primaryLocations, replicaLocations, mockFailure) =>
       val payload = PbDestroyWorkerSlots.newBuilder()
         .setShuffleKey(shuffleKey)
         .addAllPrimaryLocations(primaryLocations)
         .addAllReplicaLocation(replicaLocations)
+        .setMockFailure(mockFailure)
         .build().toByteArray
       new TransportMessage(MessageType.DESTROY, payload)
 
@@ -930,6 +944,8 @@ object ControlMessages extends Logging {
       case REQUEST_SLOTS_VALUE =>
         val pbRequestSlots = PbRequestSlots.parseFrom(message.getPayload)
         val userIdentifier = PbSerDeUtils.fromPbUserIdentifier(pbRequestSlots.getUserIdentifier)
+        val excludedWorkerInfoSet =
+          pbRequestSlots.getExcludedWorkerSetList.asScala.map(PbSerDeUtils.fromPbWorkerInfo).toSet
         RequestSlots(
           pbRequestSlots.getApplicationId,
           pbRequestSlots.getShuffleId,
@@ -940,6 +956,7 @@ object ControlMessages extends Logging {
           userIdentifier,
           pbRequestSlots.getMaxWorkers,
           pbRequestSlots.getAvailableStorageTypes,
+          excludedWorkerInfoSet,
           pbRequestSlots.getRequestId)
 
       case REQUEST_SLOTS_RESPONSE_VALUE =>
@@ -1098,7 +1115,8 @@ object ControlMessages extends Logging {
           pbCommitFiles.getPrimaryIdsList,
           pbCommitFiles.getReplicaIdsList,
           pbCommitFiles.getMapAttemptsList.asScala.map(_.toInt).toArray,
-          pbCommitFiles.getEpoch)
+          pbCommitFiles.getEpoch,
+          pbCommitFiles.getMockFailure)
 
       case COMMIT_FILES_RESPONSE_VALUE =>
         val pbCommitFilesResponse = PbCommitFilesResponse.parseFrom(message.getPayload)
@@ -1129,7 +1147,8 @@ object ControlMessages extends Logging {
         DestroyWorkerSlots(
           pbDestroy.getShuffleKey,
           pbDestroy.getPrimaryLocationsList,
-          pbDestroy.getReplicaLocationList)
+          pbDestroy.getReplicaLocationList,
+          pbDestroy.getMockFailure)
 
       case DESTROY_RESPONSE_VALUE =>
         val pbDestroyResponse = PbDestroyWorkerSlotsResponse.parseFrom(message.getPayload)

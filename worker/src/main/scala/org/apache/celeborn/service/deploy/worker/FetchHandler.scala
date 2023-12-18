@@ -368,12 +368,14 @@ class FetchHandler(
           s"$chunksBeingTransferred exceeds ${MAX_CHUNKS_BEING_TRANSFERRED.key} " +
           s"${Utils.bytesToString(threshold)}."
         logError(message)
+        workerSource.incCounter(WorkerSource.FETCH_CHUNK_FAIL_COUNT)
         client.getChannel.writeAndFlush(new ChunkFetchFailure(streamChunkSlice, message))
         return
       }
     }
 
-    workerSource.startTimer(WorkerSource.FETCH_CHUNK_TIME, req.toString)
+    val reqStr = req.toString
+    workerSource.startTimer(WorkerSource.FETCH_CHUNK_TIME, reqStr)
     val fetchTimeMetric = chunkStreamManager.getFetchTimeMetric(streamChunkSlice.streamId)
     val fetchBeginTime = System.nanoTime()
     try {
@@ -400,7 +402,7 @@ class FetchHandler(
             if (fetchTimeMetric != null) {
               fetchTimeMetric.update(System.nanoTime() - fetchBeginTime)
             }
-            workerSource.stopTimer(WorkerSource.FETCH_CHUNK_TIME, req.toString)
+            workerSource.stopTimer(WorkerSource.FETCH_CHUNK_TIME, reqStr)
           }
         })
     } catch {
@@ -409,10 +411,11 @@ class FetchHandler(
           s"Error opening block $streamChunkSlice for request from " +
             NettyUtils.getRemoteAddress(client.getChannel),
           e)
+        workerSource.incCounter(WorkerSource.FETCH_CHUNK_FAIL_COUNT)
         client.getChannel.writeAndFlush(new ChunkFetchFailure(
           streamChunkSlice,
           Throwables.getStackTraceAsString(e)))
-        workerSource.stopTimer(WorkerSource.FETCH_CHUNK_TIME, req.toString)
+        workerSource.stopTimer(WorkerSource.FETCH_CHUNK_TIME, reqStr)
     }
   }
 
