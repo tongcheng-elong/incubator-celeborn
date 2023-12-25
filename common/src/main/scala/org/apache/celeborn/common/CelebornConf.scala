@@ -758,6 +758,12 @@ class CelebornConf(loadDefaults: Boolean) extends Cloneable with Logging with Se
   def clientExcludedWorkerExpireTimeout: Long = get(CLIENT_EXCLUDED_WORKER_EXPIRE_TIMEOUT)
   def clientExcludeReplicaOnFailureEnabled: Boolean =
     get(CLIENT_EXCLUDE_PEER_WORKER_ON_FAILURE_ENABLED)
+
+  def sparkIoEncryptionEnabled: Boolean = get(SPARK_CLIENT_IO_ENCRYPTION_ENABLED)
+  def sparkIoEncryptionKey: String = get(SPARK_CLIENT_IO_ENCRYPTION_KEY)
+  def sparkIoEncryptionInitializationVector: String =
+    get(SPARK_CLIENT_IO_ENCRYPTION_INITIALIZATION_VECTOR)
+
   def clientMrMaxPushData: Long = get(CLIENT_MR_PUSH_DATA_MAX)
 
   // //////////////////////////////////////////////////////
@@ -856,6 +862,10 @@ class CelebornConf(loadDefaults: Boolean) extends Cloneable with Logging with Se
   //                   Client Shuffle                    //
   // //////////////////////////////////////////////////////
   def shuffleWriterMode: ShuffleMode = ShuffleMode.valueOf(get(SPARK_SHUFFLE_WRITER_MODE))
+  def dynamicWriteModeEnabled =
+    get(CLIENT_PUSH_DYNAMIC_WRITE_MODE_ENABLED)
+  def dynamicWriteModePartitionNumThreshold =
+    get(CLIENT_PUSH_DYNAMIC_WRITE_MODE_PARTITION_NUM_THRESHOLD)
   def shufflePartitionType: PartitionType = PartitionType.valueOf(get(SHUFFLE_PARTITION_TYPE))
   def shuffleRangeReadFilterEnabled: Boolean = get(SHUFFLE_RANGE_READ_FILTER_ENABLED)
   def shuffleForceFallbackEnabled: Boolean = get(SPARK_SHUFFLE_FORCE_FALLBACK_ENABLED)
@@ -3751,13 +3761,35 @@ object CelebornConf extends Logging {
       .booleanConf
       .createWithDefault(true)
 
+  val CLIENT_PUSH_DYNAMIC_WRITE_MODE_ENABLED: ConfigEntry[Boolean] =
+    buildConf("celeborn.client.spark.push.dynamicWriteMode.enabled")
+      .categories("client")
+      .doc("Whether to dynamically switch push write mode based on conditions.If true, " +
+        s"shuffle mode will be only determined by partition count")
+      .version("0.5.0")
+      .booleanConf
+      .createWithDefault(false)
+
+  val CLIENT_PUSH_DYNAMIC_WRITE_MODE_PARTITION_NUM_THRESHOLD: ConfigEntry[Int] =
+    buildConf("celeborn.client.spark.push.dynamicWriteMode.partitionNum.threshold")
+      .categories("client")
+      .doc(s"Threshold of shuffle partition number for dynamically switching push writer mode. " +
+        s"When the shuffle partition number is greater than this value, " +
+        s"use the sort-based shuffle writer for memory efficiency; " +
+        s"otherwise use the hash-based shuffle writer for speed. " +
+        s"This configuration only takes effect when ${CLIENT_PUSH_DYNAMIC_WRITE_MODE_ENABLED.key} is true.")
+      .version("0.5.0")
+      .intConf
+      .createWithDefault(2000)
+
   val SPARK_SHUFFLE_WRITER_MODE: ConfigEntry[String] =
     buildConf("celeborn.client.spark.shuffle.writer")
       .withAlternative("celeborn.shuffle.writer")
       .categories("client")
-      .doc("Celeborn supports the following kind of shuffle writers. 1. hash: hash-based shuffle writer " +
-        "works fine when shuffle partition count is normal; 2. sort: sort-based shuffle writer works fine " +
-        "when memory pressure is high or shuffle partition count is huge.")
+      .doc(s"Celeborn supports the following kind of shuffle writers. 1. hash: hash-based shuffle writer " +
+        s"works fine when shuffle partition count is normal; 2. sort: sort-based shuffle writer works fine " +
+        s"when memory pressure is high or shuffle partition count is huge. " +
+        s"This configuration only takes effect when ${CLIENT_PUSH_DYNAMIC_WRITE_MODE_ENABLED.key} is false.")
       .version("0.3.0")
       .stringConf
       .transform(_.toUpperCase(Locale.ROOT))
@@ -4239,4 +4271,28 @@ object CelebornConf extends Logging {
       .version("0.5.0")
       .timeConf(TimeUnit.MILLISECONDS)
       .createWithDefaultString("30s")
+
+  val SPARK_CLIENT_IO_ENCRYPTION_ENABLED: ConfigEntry[Boolean] =
+    buildConf("celeborn.client.spark.io.encryption.enabled")
+      .categories("client")
+      .version("0.4.0")
+      .doc("whether to enable io encryption")
+      .booleanConf
+      .createWithDefault(true)
+
+  val SPARK_CLIENT_IO_ENCRYPTION_KEY: ConfigEntry[String] =
+    buildConf("celeborn.client.spark.io.encryption.key")
+      .categories("client")
+      .version("0.4.0")
+      .doc("io encryption key")
+      .stringConf
+      .createWithDefault("")
+
+  val SPARK_CLIENT_IO_ENCRYPTION_INITIALIZATION_VECTOR: ConfigEntry[String] =
+    buildConf("celeborn.client.spark.io.encryption.initialization.vector")
+      .categories("client")
+      .version("0.4.0")
+      .doc("io encryption initialization vector")
+      .stringConf
+      .createWithDefault("")
 }

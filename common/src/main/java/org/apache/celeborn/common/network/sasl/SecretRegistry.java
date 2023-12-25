@@ -15,20 +15,13 @@
  * limitations under the License.
  */
 
-package org.apache.celeborn.service.deploy.worker.shuffledb;
+package org.apache.celeborn.common.network.sasl;
 
-import java.io.Closeable;
-import java.util.Iterator;
-import java.util.Map;
+/** Interface for getting a secret key associated with some application. */
+public interface SecretRegistry {
 
-/** Note: code copied from Apache Spark. */
-public interface DBIterator extends Iterator<Map.Entry<byte[], byte[]>>, Closeable {
+  /** Gets an appropriate SASL secret key for the given appId. */
+  String getSecretKey(String appId);
 
-  /** Position at the first entry in the source whose `key` is at target. */
-  void seek(byte[] key);
-
-  @Override
-  default void remove() {
-    throw new UnsupportedOperationException();
-  }
+  boolean isRegistered(String appId);
 }

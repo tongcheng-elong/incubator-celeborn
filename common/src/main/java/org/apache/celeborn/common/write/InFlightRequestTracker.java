@@ -58,22 +58,28 @@ public class InFlightRequestTracker {
   }
 
   public void addBatch(int batchId, String hostAndPushPort) {
-    Set<Integer> batchIdSetPerPair =
+    Set<Integer> batchIdSet =
         inflightBatchesPerAddress.computeIfAbsent(
             hostAndPushPort, id -> ConcurrentHashMap.newKeySet());
-    batchIdSetPerPair.add(batchId);
-    totalInflightReqs.increment();
+    if (batchIdSet.add(batchId)) {
+      totalInflightReqs.increment();
+    } else {
+      logger.debug("{} has already been inflight.", batchId);
+    }
   }
 
   public void removeBatch(int batchId, String hostAndPushPort) {
     Set<Integer> batchIdSet = inflightBatchesPerAddress.get(hostAndPushPort);
     // TODO: Need to debug why batchIdSet will be null.
     if (batchIdSet != null) {
-      batchIdSet.remove(batchId);
+      if (batchIdSet.remove(batchId)) {
+        totalInflightReqs.decrement();
+      } else {
+        logger.debug("BatchIdSet has removed {}.", batchId);
+      }
     } else {
       logger.warn("BatchIdSet of {} is null.", hostAndPushPort);
     }
-    totalInflightReqs.decrement();
   }
 
   public void onSuccess(String hostAndPushPort) {
@@ -97,7 +103,7 @@ public class InFlightRequestTracker {
     pushStrategy.limitPushSpeed(pushState, hostAndPushPort);
     int currentMaxReqsInFlight = pushStrategy.getCurrentMaxReqsInFlight(hostAndPushPort);
 
-    Set batchIdSet = getBatchIdSetByAddressPair(hostAndPushPort);
+    Set<Integer> batchIdSet = getBatchIdSetByAddressPair(hostAndPushPort);
     long times = waitInflightTimeoutMs / delta;
     try {
       while (times > 0) {
@@ -158,12 +164,13 @@ public class InFlightRequestTracker {
     if (times <= 0) {
       logger.error(
           "After waiting for {} ms, "
-              + "there are still {} batches in flight "
-              + "for hostAndPushPort {}, "
+              + "there are still {} in flight, "
               + "which exceeds the current limit 0.",
           waitInflightTimeoutMs,
-          totalInflightReqs.sum(),
-          inflightBatchesPerAddress.keySet().stream().collect(Collectors.joining(", ", "[", "]")));
+          inflightBatchesPerAddress.entrySet().stream()
+              .filter(c -> !c.getValue().isEmpty())
+              .map(c -> c.getValue().size() + " batches for hostAndPushPort " + c.getKey())
+              .collect(Collectors.joining(", ", "[", "]")));
     }
 
     if (pushState.exception.get() != null) {

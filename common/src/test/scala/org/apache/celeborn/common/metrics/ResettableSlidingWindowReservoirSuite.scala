@@ -15,20 +15,21 @@
  * limitations under the License.
  */
 
-package org.apache.celeborn.service.deploy.worker.shuffledb;
+package org.apache.celeborn.common.metrics
 
-import java.io.Closeable;
-import java.util.Iterator;
-import java.util.Map;
+import org.apache.celeborn.CelebornFunSuite
 
-/** Note: code copied from Apache Spark. */
-public interface DBIterator extends Iterator<Map.Entry<byte[], byte[]>>, Closeable {
-
-  /** Position at the first entry in the source whose `key` is at target. */
-  void seek(byte[] key);
-
-  @Override
-  default void remove() {
-    throw new UnsupportedOperationException();
+class ResettableSlidingWindowReservoirSuite extends CelebornFunSuite {
+  test("test reset ResettableSlidingWindowReservoir") {
+    val reservoir = new ResettableSlidingWindowReservoir(10)
+    0 until 20 foreach (idx => reservoir.update(idx))
+    val snapshot = reservoir.getSnapshot
+    assert(snapshot.getValues.length == 10)
+    reservoir.reset()
+    val snapshot2 = reservoir.getSnapshot
+    assert(snapshot2.getValues.length == 0)
+    0 until 5 foreach (idx => reservoir.update(1))
+    val snapshot3 = reservoir.getSnapshot
+    assert(snapshot3.getValues.length == 5)
   }
 }

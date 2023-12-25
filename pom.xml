@@ -52,7 +52,7 @@
   </distributionManagement>
 
   <properties>
-    <project.version>tc-0.4.0-SNAPSHOT</project.version>
+    <project.version>0.5.0-SNAPSHOT</project.version>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
 
@@ -92,7 +92,7 @@
     <scalatest.version>3.2.16</scalatest.version>
     <slf4j.version>1.7.36</slf4j.version>
     <roaringbitmap.version>0.9.32</roaringbitmap.version>
-    <snakeyaml.version>1.33</snakeyaml.version>
+    <snakeyaml.version>2.2</snakeyaml.version>
     <zstd-jni.version>1.5.2-1</zstd-jni.version>
     <kubernetes-client.version>6.7.0</kubernetes-client.version>
     <rocksdbjni.version>8.5.3</rocksdbjni.version>
@@ -929,7 +929,7 @@
             <fork>true</fork>
             <compilerArgs>
               <arg>-XDcompilePolicy=simple</arg>
-              <arg>-Xplugin:ErrorProne</arg>
+              <arg>-Xplugin:ErrorProne -XepExcludedPaths:.*/target/generated-sources/protobuf/.* -Xep:FutureReturnValueIgnored:OFF -Xep:TypeParameterUnusedInFormals:OFF -Xep:UnusedVariable:OFF</arg>
             </compilerArgs>
             <annotationProcessorPaths>
               <path>
