@@ -21,8 +21,6 @@ import java.io.IOException;
 import java.util.Optional;
 import java.util.Properties;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.atomic.AtomicInteger;
 
 import org.apache.spark.*;
 import org.apache.spark.internal.config.package$;
@@ -41,7 +39,6 @@ import org.apache.celeborn.client.ShuffleClient;
 import org.apache.celeborn.client.security.CryptoUtils;
 import org.apache.celeborn.common.CelebornConf;
 import org.apache.celeborn.common.protocol.ShuffleMode;
-import org.apache.celeborn.common.util.ThreadUtils;
 import org.apache.celeborn.reflect.DynMethods;
 
 /**
@@ -90,9 +87,6 @@ public class SparkShuffleManager implements ShuffleManager {
       ConcurrentHashMap.newKeySet();
   private final CelebornShuffleFallbackPolicyRunner fallbackPolicyRunner;
 
-  private final ExecutorService[] asyncPushers;
-  private AtomicInteger pusherIdx = new AtomicInteger(0);
-
   private long sendBufferPoolCheckInterval;
   private long sendBufferPoolExpireTimeout;
 
@@ -105,21 +99,17 @@ public class SparkShuffleManager implements ShuffleManager {
               + "use Celeborn as Remote Shuffle Service to avoid performance degradation.",
           SQLConf.LOCAL_SHUFFLE_READER_ENABLED().key());
     }
+    if (conf.getBoolean("spark.dynamicAllocation.shuffleTracking.enabled", false)) {
+      logger.warn(
+          "Detected spark.dynamicAllocation.shuffleTracking.enabled (default is false) is enabled, "
+              + "it's highly recommended to disable it when use Celeborn as Remote Shuffle Service "
+              + "to avoid performance degradation.");
+    }
     this.conf = conf;
     this.isDriver = isDriver;
     this.celebornConf = SparkUtils.fromSparkConf(conf);
     this.cores = executorCores(conf);
     this.fallbackPolicyRunner = new CelebornShuffleFallbackPolicyRunner(celebornConf);
-    if ((ShuffleMode.SORT.equals(celebornConf.shuffleWriterMode())
-            || celebornConf.dynamicWriteModeEnabled())
-        && celebornConf.clientPushSortPipelineEnabled()) {
-      asyncPushers = new ExecutorService[cores];
-      for (int i = 0; i < asyncPushers.length; i++) {
-        asyncPushers[i] = ThreadUtils.newDaemonSingleThreadExecutor("async-pusher-" + i);
-      }
-    } else {
-      asyncPushers = null;
-    }
     this.sendBufferPoolCheckInterval = celebornConf.clientPushSendBufferPoolExpireCheckInterval();
     this.sendBufferPoolExpireTimeout = celebornConf.clientPushSendBufferPoolExpireTimeout();
   }
@@ -305,8 +295,6 @@ public class SparkShuffleManager implements ShuffleManager {
         }
 
         if (ShuffleMode.SORT.equals(shuffleMode)) {
-          ExecutorService pushThread =
-              celebornConf.clientPushSortPipelineEnabled() ? getPusherThread() : null;
           return new SortBasedShuffleWriter<>(
               shuffleId,
               h.dependency(),
@@ -315,7 +303,6 @@ public class SparkShuffleManager implements ShuffleManager {
               celebornConf,
               shuffleClient,
               metrics,
-              pushThread,
               SendBufferPool.get(cores, sendBufferPoolCheckInterval, sendBufferPoolExpireTimeout));
         } else if (ShuffleMode.HASH.equals(shuffleMode)) {
           SendBufferPool pool =
@@ -341,6 +328,7 @@ public class SparkShuffleManager implements ShuffleManager {
   }
 
   // Added in SPARK-32055, for Spark 3.1 and above
+  @SuppressWarnings("MissingOverride")
   public <K, C> ShuffleReader<K, C> getReader(
       ShuffleHandle handle,
       int startMapIndex,
@@ -365,6 +353,7 @@ public class SparkShuffleManager implements ShuffleManager {
   }
 
   // Marked as final in SPARK-32055, reserved for Spark 3.0
+  @SuppressWarnings("MissingOverride")
   public <K, C> ShuffleReader<K, C> getReader(
       ShuffleHandle handle,
       int startPartition,
@@ -446,12 +435,6 @@ public class SparkShuffleManager implements ShuffleManager {
           getIoCryptoKey(),
           getIoCryptoConf());
     }
-  }
-
-  private ExecutorService getPusherThread() {
-    ExecutorService pusherThread = asyncPushers[pusherIdx.get() % asyncPushers.length];
-    pusherIdx.incrementAndGet();
-    return pusherThread;
   }
 
   private int executorCores(SparkConf conf) {
