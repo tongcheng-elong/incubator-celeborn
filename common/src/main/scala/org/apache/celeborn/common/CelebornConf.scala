@@ -689,6 +689,8 @@ class CelebornConf(loadDefaults: Boolean) extends Cloneable with Logging with Se
     get(WORKER_PARTITION_SORTER_PER_PARTITION_RESERVED_MEMORY)
   def partitionSorterThreads: Int =
     get(PARTITION_SORTER_THREADS).getOrElse(Runtime.getRuntime.availableProcessors)
+  def partitionSorterIndexCacheMaxWeight: Long = get(PARTITION_SORTER_INDEX_CACHE_MAX_WEIGHT)
+  def partitionSorterIndexExpire: Long = get(PARTITION_SORTER_INDEX_CACHE_EXPIRE)
   def workerPushHeartbeatEnabled: Boolean = get(WORKER_PUSH_HEARTBEAT_ENABLED)
   def workerPushMaxComponents: Int = get(WORKER_PUSH_COMPOSITEBUFFER_MAXCOMPONENTS)
   def workerFetchHeartbeatEnabled: Boolean = get(WORKER_FETCH_HEARTBEAT_ENABLED)
@@ -758,12 +760,6 @@ class CelebornConf(loadDefaults: Boolean) extends Cloneable with Logging with Se
   def clientExcludedWorkerExpireTimeout: Long = get(CLIENT_EXCLUDED_WORKER_EXPIRE_TIMEOUT)
   def clientExcludeReplicaOnFailureEnabled: Boolean =
     get(CLIENT_EXCLUDE_PEER_WORKER_ON_FAILURE_ENABLED)
-
-  def sparkIoEncryptionEnabled: Boolean = get(SPARK_CLIENT_IO_ENCRYPTION_ENABLED)
-  def sparkIoEncryptionKey: String = get(SPARK_CLIENT_IO_ENCRYPTION_KEY)
-  def sparkIoEncryptionInitializationVector: String =
-    get(SPARK_CLIENT_IO_ENCRYPTION_INITIALIZATION_VECTOR)
-
   def clientMrMaxPushData: Long = get(CLIENT_MR_PUSH_DATA_MAX)
 
   // //////////////////////////////////////////////////////
@@ -1364,7 +1360,7 @@ object CelebornConf extends Logging {
     buildConf("celeborn.network.memory.allocator.verbose.metric")
       .categories("network")
       .version("0.3.0")
-      .doc("Weather to enable verbose metric for pooled allocator.")
+      .doc("Whether to enable verbose metric for pooled allocator.")
       .booleanConf
       .createWithDefault(false)
 
@@ -2417,6 +2413,22 @@ object CelebornConf extends Logging {
       .version("0.3.0")
       .intConf
       .createOptional
+
+  val PARTITION_SORTER_INDEX_CACHE_MAX_WEIGHT: ConfigEntry[Long] =
+    buildConf("celeborn.worker.sortPartition.indexCache.maxWeight")
+      .categories("worker")
+      .doc("PartitionSorter's cache max weight for index buffer.")
+      .version("0.4.0")
+      .longConf
+      .createWithDefault(100000)
+
+  val PARTITION_SORTER_INDEX_CACHE_EXPIRE: ConfigEntry[Long] =
+    buildConf("celeborn.worker.sortPartition.indexCache.expire")
+      .categories("worker")
+      .doc("PartitionSorter's cache item expire time.")
+      .version("0.4.0")
+      .timeConf(TimeUnit.MILLISECONDS)
+      .createWithDefaultString("180s")
 
   val WORKER_PARTITION_SORTER_PER_PARTITION_RESERVED_MEMORY: ConfigEntry[Long] =
     buildConf("celeborn.worker.sortPartition.reservedMemoryPerPartition")
@@ -4257,28 +4269,4 @@ object CelebornConf extends Logging {
       .version("0.5.0")
       .timeConf(TimeUnit.MILLISECONDS)
       .createWithDefaultString("30s")
-
-  val SPARK_CLIENT_IO_ENCRYPTION_ENABLED: ConfigEntry[Boolean] =
-    buildConf("celeborn.client.spark.io.encryption.enabled")
-      .categories("client")
-      .version("0.4.0")
-      .doc("whether to enable io encryption")
-      .booleanConf
-      .createWithDefault(true)
-
-  val SPARK_CLIENT_IO_ENCRYPTION_KEY: ConfigEntry[String] =
-    buildConf("celeborn.client.spark.io.encryption.key")
-      .categories("client")
-      .version("0.4.0")
-      .doc("io encryption key")
-      .stringConf
-      .createWithDefault("")
-
-  val SPARK_CLIENT_IO_ENCRYPTION_INITIALIZATION_VECTOR: ConfigEntry[String] =
-    buildConf("celeborn.client.spark.io.encryption.initialization.vector")
-      .categories("client")
-      .version("0.4.0")
-      .doc("io encryption initialization vector")
-      .stringConf
-      .createWithDefault("")
 }
