@@ -34,7 +34,7 @@ class SparkShuffleManagerSuite extends Logging {
       .setIfMissing(
         "spark.shuffle.manager",
         "org.apache.spark.shuffle.celeborn.SparkShuffleManager")
-      .set(s"spark.${CelebornConf.MASTER_ENDPOINTS.key}", "localhost:9097")
+      .set(s"spark.${CelebornConf.MASTER_ENDPOINTS.key}", "localhost:19097")
       .set(s"spark.${CelebornConf.CLIENT_PUSH_REPLICATE_ENABLED.key}", "false")
       .set("spark.shuffle.service.enabled", "false")
       .set("spark.shuffle.useOldFetchProtocol", "true")
@@ -42,10 +42,15 @@ class SparkShuffleManagerSuite extends Logging {
       .setAppName("test")
     val sc = new SparkContext(conf)
     // scalastyle:off println
-    sc.parallelize(1 to 1000, 2).map { i => (i, Range(1, 100).mkString(",")) }
-      .groupByKey(16).count()
+    sc
+      .parallelize(1 to 10, 10)
+      .flatMap(_ => (1 to 100).iterator.map(num => num))
+      .repartition(10)
+      .count
+//    sc.parallelize(1 to 1000, 2).map { i => (i, Range(1, 100).mkString(",")) }
+//      .groupByKey(16).count()
     // scalastyle:on println
-    sc.stop()
+//    sc.stop()
   }
 
   @junit.Test
