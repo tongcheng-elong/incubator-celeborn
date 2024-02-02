@@ -32,7 +32,7 @@ class ClusterReadWriteTestWithLZ4 extends ReadWriteTestBase {
     val workerConf = Map(
       "celeborn.master.endpoints" -> s"localhost:$masterPort")
     logInfo("test initialized , setup Celeborn mini cluster")
-    setUpMiniCluster(masterConf,workerConf)
+//    setUpMiniCluster(masterConf,workerConf)
     scala.io.StdIn.readLine()
   }
 
