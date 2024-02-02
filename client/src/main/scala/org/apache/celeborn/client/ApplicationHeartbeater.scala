@@ -20,7 +20,6 @@ package org.apache.celeborn.client
 import java.util.concurrent.{ScheduledFuture, TimeUnit}
 
 import scala.collection.JavaConverters._
-import scala.concurrent.duration.DurationInt
 
 import org.apache.celeborn.common.CelebornConf
 import org.apache.celeborn.common.client.MasterClient
@@ -42,7 +41,8 @@ class ApplicationHeartbeater(
   private val appHeartbeatIntervalMs = conf.appHeartbeatIntervalMs
   private val applicationUnregisterEnabled = conf.applicationUnregisterEnabled
   private val appHeartbeatHandlerThread =
-    ThreadUtils.newDaemonSingleThreadScheduledExecutor("celeborn-app-heartbeat")
+    ThreadUtils.newDaemonSingleThreadScheduledExecutor(
+      "celeborn-client-lifecycle-manager-app-heartbeater")
   private var appHeartbeat: ScheduledFuture[_] = _
 
   def start(): Unit = {
@@ -118,7 +118,7 @@ class ApplicationHeartbeater(
         // Stop appHeartbeat first
         logInfo(s"Stop Application heartbeat $appId")
         appHeartbeat.cancel(true)
-        ThreadUtils.shutdown(appHeartbeatHandlerThread, 800.millis)
+        ThreadUtils.shutdown(appHeartbeatHandlerThread)
         if (applicationUnregisterEnabled) {
           unregisterApplication()
         }

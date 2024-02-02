@@ -29,7 +29,6 @@ import javax.annotation.Nullable;
 
 import scala.Tuple2;
 import scala.concurrent.Future;
-import scala.concurrent.duration.Duration;
 import scala.reflect.ClassTag$;
 
 import com.google.common.util.concurrent.Uninterruptibles;
@@ -67,7 +66,8 @@ public class MasterClient {
     this.maxRetries = Math.max(masterEndpoints.size(), conf.masterClientMaxRetries());
     this.rpcTimeout = conf.masterClientRpcAskTimeout();
     this.rpcEndpointRef = new AtomicReference<>();
-    this.oneWayMessageSender = ThreadUtils.newDaemonSingleThreadExecutor("One-Way-Message-Sender");
+    this.oneWayMessageSender =
+        ThreadUtils.newDaemonSingleThreadExecutor("celeborn-one-way-message-sender");
   }
 
   private static final String SPLITTER = "#";
@@ -124,7 +124,7 @@ public class MasterClient {
   }
 
   public void close() {
-    ThreadUtils.shutdown(oneWayMessageSender, Duration.apply("800ms"));
+    ThreadUtils.shutdown(oneWayMessageSender);
   }
 
   @SuppressWarnings("UnstableApiUsage")
@@ -236,8 +236,9 @@ public class MasterClient {
 
       if (endpointRef == null) {
         throw new IllegalStateException(
-            "After trying all the available Master Addresses,"
-                + " an usable link still couldn't be created.");
+            "After trying all the available Master Addresses("
+                + String.join(",", masterEndpoints)
+                + "), an usable link still couldn't be created.");
       } else {
         LOG.info("connect to master {}.", endpointRef.address());
       }

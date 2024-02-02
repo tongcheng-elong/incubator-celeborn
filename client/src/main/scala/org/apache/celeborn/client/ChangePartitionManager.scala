@@ -22,7 +22,6 @@ import java.util.{Set => JSet}
 import java.util.concurrent.{ConcurrentHashMap, ScheduledExecutorService, ScheduledFuture, TimeUnit}
 
 import scala.collection.JavaConverters._
-import scala.concurrent.duration.DurationInt
 
 import org.apache.celeborn.common.CelebornConf
 import org.apache.celeborn.common.internal.Logging
@@ -53,14 +52,14 @@ class ChangePartitionManager(
 
   private val batchHandleChangePartitionEnabled = conf.batchHandleChangePartitionEnabled
   private val batchHandleChangePartitionExecutors = ThreadUtils.newDaemonCachedThreadPool(
-    "celeborn-lifecycle-manager-change-partition-executor",
+    "celeborn-client-lifecycle-manager-change-partition-executor",
     conf.batchHandleChangePartitionNumThreads)
   private val batchHandleChangePartitionRequestInterval =
     conf.batchHandleChangePartitionRequestInterval
   private val batchHandleChangePartitionSchedulerThread: Option[ScheduledExecutorService] =
     if (batchHandleChangePartitionEnabled) {
       Some(ThreadUtils.newDaemonSingleThreadScheduledExecutor(
-        "celeborn-lifecycle-manager-change-partition-scheduler"))
+        "celeborn-client-lifecycle-manager-change-partition-scheduler"))
     } else {
       None
     }
@@ -113,7 +112,7 @@ class ChangePartitionManager(
 
   def stop(): Unit = {
     batchHandleChangePartition.foreach(_.cancel(true))
-    batchHandleChangePartitionSchedulerThread.foreach(ThreadUtils.shutdown(_, 800.millis))
+    batchHandleChangePartitionSchedulerThread.foreach(ThreadUtils.shutdown(_))
   }
 
   private val rpcContextRegisterFunc =

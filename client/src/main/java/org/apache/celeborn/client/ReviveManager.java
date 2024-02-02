@@ -22,8 +22,6 @@ import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
-import scala.concurrent.duration.Duration;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -40,7 +38,8 @@ class ReviveManager {
   private final int batchSize;
   ShuffleClientImpl shuffleClient;
   private final ScheduledExecutorService batchReviveRequestScheduler =
-      ThreadUtils.newDaemonSingleThreadScheduledExecutor("batch-revive-scheduler");
+      ThreadUtils.newDaemonSingleThreadScheduledExecutor(
+          "celeborn-client-lifecycle-manager-batch-revive-scheduler");
 
   public ReviveManager(ShuffleClientImpl shuffleClient, CelebornConf conf) {
     this.shuffleClient = shuffleClient;
@@ -127,6 +126,6 @@ class ReviveManager {
   }
 
   public void close() {
-    ThreadUtils.shutdown(batchReviveRequestScheduler, Duration.apply("800ms"));
+    ThreadUtils.shutdown(batchReviveRequestScheduler);
   }
 }

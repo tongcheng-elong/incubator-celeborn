@@ -21,7 +21,6 @@ import java.util
 import java.util.concurrent.{ScheduledExecutorService, ScheduledFuture, TimeUnit}
 
 import scala.collection.JavaConverters._
-import scala.concurrent.duration.DurationInt
 
 import org.apache.celeborn.common.CelebornConf
 import org.apache.celeborn.common.internal.Logging
@@ -38,14 +37,14 @@ class ReleasePartitionManager(
   private val shuffleReleasePartitionRequests = JavaUtils.newConcurrentHashMap[Int, util.Set[Int]]
   private val batchHandleReleasePartitionEnabled = conf.batchHandleReleasePartitionEnabled
   private val batchHandleReleasePartitionExecutors = ThreadUtils.newDaemonCachedThreadPool(
-    "celeborn-lifecycle-manager-release-partition-executor",
+    "celeborn-client-lifecycle-manager-release-partition-executor",
     conf.batchHandleReleasePartitionNumThreads)
   private val batchHandleReleasePartitionRequestInterval =
     conf.batchHandleReleasePartitionRequestInterval
   private val batchHandleReleasePartitionSchedulerThread: Option[ScheduledExecutorService] =
     if (batchHandleReleasePartitionEnabled) {
       Some(ThreadUtils.newDaemonSingleThreadScheduledExecutor(
-        "celeborn-lifecycle-manager-release-partition-scheduler"))
+        "celeborn-client-lifecycle-manager-release-partition-scheduler"))
     } else {
       None
     }
@@ -107,7 +106,7 @@ class ReleasePartitionManager(
 
   def stop(): Unit = {
     batchHandleReleasePartition.foreach(_.cancel(true))
-    batchHandleReleasePartitionSchedulerThread.foreach(ThreadUtils.shutdown(_, 800.millis))
+    batchHandleReleasePartitionSchedulerThread.foreach(ThreadUtils.shutdown(_))
   }
 
   def releasePartition(shuffleId: Int, partitionId: Int): Unit = {
