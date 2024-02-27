@@ -42,14 +42,15 @@ import org.apache.celeborn.common.network.sasl.SecretRegistryImpl
 import org.apache.celeborn.common.protocol._
 import org.apache.celeborn.common.protocol.message.{ControlMessages, StatusCode}
 import org.apache.celeborn.common.protocol.message.ControlMessages._
-import org.apache.celeborn.common.quota.{QuotaManager, ResourceConsumption}
+import org.apache.celeborn.common.quota.ResourceConsumption
 import org.apache.celeborn.common.rpc._
-import org.apache.celeborn.common.security.{RpcSecurityContextBuilder, ServerSaslContextBuilder}
+import org.apache.celeborn.common.rpc.{RpcSecurityContextBuilder, ServerSaslContextBuilder}
 import org.apache.celeborn.common.util.{CelebornHadoopUtils, CollectionUtils, JavaUtils, PbSerDeUtils, ThreadUtils, Utils}
 import org.apache.celeborn.server.common.{HttpService, Service}
 import org.apache.celeborn.service.deploy.master.clustermeta.SingleMasterMetaManager
 import org.apache.celeborn.service.deploy.master.clustermeta.ha.{HAHelper, HAMasterMetaManager, MetaHandler}
 import org.apache.celeborn.service.deploy.master.network.CelebornRackResolver
+import org.apache.celeborn.service.deploy.master.quota.QuotaManager
 
 private[celeborn] class Master(
     override val conf: CelebornConf,
@@ -74,54 +75,53 @@ private[celeborn] class Master(
   metricsSystem.registerSource(new JVMCPUSource(conf, MetricsSystem.ROLE_MASTER))
   metricsSystem.registerSource(new SystemMiscSource(conf, MetricsSystem.ROLE_MASTER))
 
-  override val rpcEnv: RpcEnv = RpcEnv.create(
-    RpcNameConstants.MASTER_SYS,
-    masterArgs.host,
-    masterArgs.host,
-    masterArgs.port,
-    conf,
-    Math.max(64, Runtime.getRuntime.availableProcessors()))
-
-  // Visible for testing
-  private[master] var internalRpcEnvInUse = rpcEnv
-
-  if (conf.internalPortEnabled) {
-    val internalRpcEnv: RpcEnv = RpcEnv.create(
-      RpcNameConstants.MASTER_INTERNAL_SYS,
-      masterArgs.host,
-      masterArgs.host,
-      masterArgs.internalPort,
-      conf,
-      Math.max(64, Runtime.getRuntime.availableProcessors()))
-    logInfo(
-      s"Internal port enabled, using internal port ${masterArgs.internalPort} for internal RPC.")
-    internalRpcEnvInUse = internalRpcEnv
-  }
-
-  private val rackResolver = new CelebornRackResolver(conf)
   private val authEnabled = conf.authEnabled
   private val secretRegistry = new SecretRegistryImpl()
+
+  override val rpcEnv: RpcEnv =
+    if (!authEnabled) {
+      RpcEnv.create(
+        RpcNameConstants.MASTER_SYS,
+        masterArgs.host,
+        masterArgs.host,
+        masterArgs.port,
+        conf,
+        Math.max(64, Runtime.getRuntime.availableProcessors()))
+    } else {
+      val externalSecurityContext = new RpcSecurityContextBuilder()
+        .withServerSaslContext(
+          new ServerSaslContextBuilder()
+            .withAddRegistrationBootstrap(true)
+            .withSecretRegistry(secretRegistry).build()).build()
+      logInfo(
+        s"Secure port enabled ${masterArgs.port} for secured RPC.")
+      RpcEnv.create(
+        RpcNameConstants.MASTER_SYS,
+        masterArgs.host,
+        masterArgs.host,
+        masterArgs.port,
+        conf,
+        Math.max(64, Runtime.getRuntime.availableProcessors()),
+        Some(externalSecurityContext))
+    }
+
   // Visible for testing
-  private[master] var securedRpcEnv: RpcEnv = _
-  if (authEnabled) {
-    val externalSecurityContext = new RpcSecurityContextBuilder()
-      .withServerSaslContext(
-        new ServerSaslContextBuilder()
-          .withAddRegistrationBootstrap(true)
-          .withSecretRegistry(secretRegistry).build()).build()
+  private[master] var internalRpcEnvInUse: RpcEnv =
+    if (!conf.internalPortEnabled) {
+      rpcEnv
+    } else {
+      logInfo(
+        s"Internal port enabled, using internal port ${masterArgs.internalPort} for internal RPC.")
+      RpcEnv.create(
+        RpcNameConstants.MASTER_INTERNAL_SYS,
+        masterArgs.host,
+        masterArgs.host,
+        masterArgs.internalPort,
+        conf,
+        Math.max(64, Runtime.getRuntime.availableProcessors()))
+    }
 
-    securedRpcEnv = RpcEnv.create(
-      RpcNameConstants.MASTER_SECURED_SYS,
-      masterArgs.host,
-      masterArgs.host,
-      masterArgs.securedPort,
-      conf,
-      Math.max(64, Runtime.getRuntime.availableProcessors()),
-      Some(externalSecurityContext))
-    logInfo(
-      s"Secure port enabled ${masterArgs.securedPort} for secured RPC.")
-  }
-
+  private val rackResolver = new CelebornRackResolver(conf)
   private val statusSystem =
     if (conf.haEnabled) {
       val sys = new HAMasterMetaManager(internalRpcEnvInUse, conf, rackResolver)
@@ -162,7 +162,7 @@ private[celeborn] class Master(
   private val hdfsExpireDirsTimeoutMS = conf.hdfsExpireDirsTimeoutMS
   private val hasHDFSStorage = conf.hasHDFSStorage
 
-  private val quotaManager = QuotaManager.instantiate(conf)
+  private val quotaManager = new QuotaManager(conf, configService)
   private val masterResourceConsumptionInterval = conf.masterResourceConsumptionInterval
   private val userResourceConsumptions =
     JavaUtils.newConcurrentHashMap[UserIdentifier, (ResourceConsumption, Long)]()
@@ -251,16 +251,6 @@ private[celeborn] class Master(
     internalRpcEndpointRef = internalRpcEnvInUse.setupEndpoint(
       RpcNameConstants.MASTER_INTERNAL_EP,
       internalRpcEndpoint)
-  }
-
-  // Visible for testing
-  private[master] var securedRpcEndpoint: RpcEndpoint = _
-  private var securedRpcEndpointRef: RpcEndpointRef = _
-  if (authEnabled) {
-    securedRpcEndpoint = new SecuredRpcEndpoint(this, securedRpcEnv, conf)
-    securedRpcEndpointRef = securedRpcEnv.setupEndpoint(
-      RpcNameConstants.MASTER_SECURED_EP,
-      securedRpcEndpoint)
   }
 
   // start threads to check timeout for workers and applications
@@ -386,22 +376,16 @@ private[celeborn] class Master(
           requestId,
           shouldResponse) =>
       logDebug(s"Received heartbeat from app $appId")
-      if (checkAuthStatus(appId, context)) {
-        // TODO: [CELEBORN-1261] For the workers to be able to check whether an auth-enabled app is talking to it on
-        // unsecured port, Master will need to maintain a list of unauthenticated apps and send it to workers.
-        // This wasn't part of the original proposal because that proposal didn't target the Celeborn server to support
-        // both secured and unsecured communication.
-        executeWithLeaderChecker(
+      executeWithLeaderChecker(
+        context,
+        handleHeartbeatFromApplication(
           context,
-          handleHeartbeatFromApplication(
-            context,
-            appId,
-            totalWritten,
-            fileCount,
-            needCheckedWorkerList,
-            requestId,
-            shouldResponse))
-      }
+          appId,
+          totalWritten,
+          fileCount,
+          needCheckedWorkerList,
+          requestId,
+          shouldResponse))
 
     case pbRegisterWorker: PbRegisterWorker =>
       val requestId = pbRegisterWorker.getRequestId
@@ -436,31 +420,22 @@ private[celeborn] class Master(
       context.reply(ReleaseSlotsResponse(StatusCode.SUCCESS))
 
     case requestSlots @ RequestSlots(applicationId, _, _, _, _, _, _, _, _, _, _) =>
-      if (checkAuthStatus(applicationId, context)) {
-        // TODO: [CELEBORN-1261]
-        logTrace(s"Received RequestSlots request $requestSlots.")
-        executeWithLeaderChecker(context, handleRequestSlots(context, requestSlots))
-      }
+      logTrace(s"Received RequestSlots request $requestSlots.")
+      executeWithLeaderChecker(context, handleRequestSlots(context, requestSlots))
 
     case pb: PbUnregisterShuffle =>
       val applicationId = pb.getAppId
       val shuffleId = pb.getShuffleId
       val requestId = pb.getRequestId
-      if (checkAuthStatus(applicationId, context)) {
-        // TODO: [CELEBORN-1261]
-        logDebug(s"Received UnregisterShuffle request $requestId, $applicationId, $shuffleId")
-        executeWithLeaderChecker(
-          context,
-          handleUnregisterShuffle(context, applicationId, shuffleId, requestId))
-      }
+      logDebug(s"Received UnregisterShuffle request $requestId, $applicationId, $shuffleId")
+      executeWithLeaderChecker(
+        context,
+        handleUnregisterShuffle(context, applicationId, shuffleId, requestId))
 
     case ApplicationLost(appId, requestId) =>
-      if (context.senderAddress.equals(self.address) || checkAuthStatus(appId, context)) {
-        // TODO: [CELEBORN-1261]
-        logDebug(
-          s"Received ApplicationLost request $requestId, $appId from ${context.senderAddress}.")
-        executeWithLeaderChecker(context, handleApplicationLost(context, appId, requestId))
-      }
+      logDebug(
+        s"Received ApplicationLost request $requestId, $appId from ${context.senderAddress}.")
+      executeWithLeaderChecker(context, handleApplicationLost(context, appId, requestId))
 
     case HeartbeatFromWorker(
           host,
@@ -525,8 +500,6 @@ private[celeborn] class Master(
         handleWorkerLost(context, host, rpcPort, pushPort, fetchPort, replicatePort, requestId))
 
     case CheckQuota(userIdentifier) =>
-      // TODO: CheckQuota doesn't have application id in it, so we can't check auth status here.
-      // Will have to add application id to CheckQuota message to check auth status.
       executeWithLeaderChecker(context, handleCheckQuota(userIdentifier, context))
 
     case _: PbCheckWorkersAvailable =>
@@ -833,8 +806,9 @@ private[celeborn] class Master(
 
     if (log.isDebugEnabled()) {
       val distributions = SlotsAllocator.slotsToDiskAllocations(slots)
-      logDebug(s"allocate slots for shuffle $shuffleKey $slots" +
-        s" distributions: ${distributions.asScala.map(m => m._1.toUniqueId() -> m._2)}")
+      logDebug(
+        s"allocate slots for shuffle $shuffleKey ${slots.asScala.map(m => m._1.toUniqueId() -> m._2)}" +
+          s" distributions: ${distributions.asScala.map(m => m._1.toUniqueId() -> m._2)}")
     }
 
     // reply false if offer slots failed
@@ -959,7 +933,7 @@ private[celeborn] class Master(
     }
   }
 
-  private[master] def handleHeartbeatFromApplication(
+  private def handleHeartbeatFromApplication(
       context: RpcCallContext,
       appId: String,
       totalWritten: Long,
@@ -1064,10 +1038,13 @@ private[celeborn] class Master(
       userIdentifier: UserIdentifier,
       context: RpcCallContext): Unit = {
     val userResourceConsumption = handleResourceConsumption(userIdentifier)
-    val quota = quotaManager.getQuota(userIdentifier)
-    val (isAvailable, reason) =
-      quota.checkQuotaSpaceAvailable(userIdentifier, userResourceConsumption)
-    context.reply(CheckQuotaResponse(isAvailable, reason))
+    if (conf.quotaEnabled) {
+      val (isAvailable, reason) =
+        quotaManager.checkQuotaSpaceAvailable(userIdentifier, userResourceConsumption)
+      context.reply(CheckQuotaResponse(isAvailable, reason))
+    } else {
+      context.reply(CheckQuotaResponse(true, ""))
+    }
   }
 
   private def handleCheckWorkersAvailable(context: RpcCallContext): Unit = {
@@ -1088,16 +1065,6 @@ private[celeborn] class Master(
     workersSnapShot.asScala.filter { w =>
       statusSystem.isWorkerAvailable(w) && !tmpExcludedWorkerList.contains(w)
     }.asJava
-  }
-
-  private def checkAuthStatus(appId: String, context: RpcCallContext): Boolean = {
-    if (conf.authEnabled && secretRegistry.isRegistered(appId)) {
-      context.sendFailure(new SecurityException(
-        s"Auth enabled application $appId sending messages on unsecured port!"))
-      false
-    } else {
-      true
-    }
   }
 
   override def getMasterGroupInfo: String = {
@@ -1305,9 +1272,6 @@ private[celeborn] class Master(
     if (conf.internalPortEnabled) {
       internalRpcEnvInUse.awaitTermination()
     }
-    if (authEnabled) {
-      securedRpcEnv.awaitTermination()
-    }
   }
 
   override def stop(exitKind: Int): Unit = synchronized {
@@ -1316,9 +1280,6 @@ private[celeborn] class Master(
       rpcEnv.stop(self)
       if (conf.internalPortEnabled) {
         internalRpcEnvInUse.stop(internalRpcEndpointRef)
-      }
-      if (authEnabled) {
-        securedRpcEnv.stop(securedRpcEndpointRef)
       }
       super.stop(exitKind)
       logInfo("Master stopped.")

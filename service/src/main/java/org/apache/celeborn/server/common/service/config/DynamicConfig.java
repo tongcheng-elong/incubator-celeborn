@@ -23,13 +23,15 @@ import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import org.apache.celeborn.common.CelebornConf;
 import org.apache.celeborn.common.internal.config.ConfigEntry;
+import org.apache.celeborn.common.quota.Quota;
 import org.apache.celeborn.common.util.Utils;
 
 /**
  * Dynamic configuration is a type of configuration that can be changed at runtime as needed. It can
- * be used at system level/tenant level. When applying dynamic configuration, the priority order is
- * as follows: tenant level overrides system level, which in turn overrides static
+ * be used at system level/tenant level/tenant user level. When applying dynamic configuration, the
+ * priority order is as follows: tenant level overrides system level, which in turn overrides static
  * configuration(CelebornConf). This means that if a configuration is defined at the tenant level,
  * it will be used instead of the system level or static configuration(CelebornConf). If the
  * tenant-level configuration is missing, the system-level configuration will be used. If the
@@ -38,6 +40,7 @@ import org.apache.celeborn.common.util.Utils;
 public abstract class DynamicConfig {
   private static final Logger LOG = LoggerFactory.getLogger(DynamicConfig.class);
   protected Map<String, String> configs = new HashMap<>();
+  protected volatile Quota quota = null;
 
   public abstract DynamicConfig getParentLevelConfig();
 
@@ -87,6 +90,41 @@ public abstract class DynamicConfig {
       LOG.warn("Config {} value format is not valid, refer to parent if exist", configKey, e);
     }
     return null;
+  }
+
+  public Quota getQuota() {
+    if (quota == null) {
+      synchronized (DynamicConfig.class) {
+        if (quota == null) {
+          quota = currentQuota();
+        }
+      }
+    }
+    return quota;
+  }
+
+  protected Quota currentQuota() {
+    return new Quota(
+        getValue(
+            CelebornConf.QUOTA_DISK_BYTES_WRITTEN().key(),
+            CelebornConf.QUOTA_DISK_BYTES_WRITTEN(),
+            Long.TYPE,
+            ConfigType.BYTES),
+        getValue(
+            CelebornConf.QUOTA_DISK_FILE_COUNT().key(),
+            CelebornConf.QUOTA_DISK_FILE_COUNT(),
+            Long.TYPE,
+            ConfigType.STRING),
+        getValue(
+            CelebornConf.QUOTA_HDFS_BYTES_WRITTEN().key(),
+            CelebornConf.QUOTA_HDFS_BYTES_WRITTEN(),
+            Long.TYPE,
+            ConfigType.BYTES),
+        getValue(
+            CelebornConf.QUOTA_HDFS_FILE_COUNT().key(),
+            CelebornConf.QUOTA_HDFS_FILE_COUNT(),
+            Long.TYPE,
+            ConfigType.STRING));
   }
 
   public Map<String, String> getConfigs() {

@@ -18,7 +18,9 @@
 package org.apache.celeborn.server.common.service.config;
 
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -49,25 +51,20 @@ public abstract class BaseConfigServiceImpl implements ConfigService {
   public BaseConfigServiceImpl(CelebornConf celebornConf) throws IOException {
     this.celebornConf = celebornConf;
     this.systemConfigAtomicReference.set(new SystemConfig(celebornConf));
-    this.refreshAllCache();
-    boolean dynamicConfigEnabled = celebornConf.dynamicConfigEnabled();
-    if (dynamicConfigEnabled) {
-      LOG.info("Celeborn dynamic config is enabled.");
-      long dynamicConfigRefreshInterval = celebornConf.dynamicConfigRefreshInterval();
-      this.configRefreshService.scheduleWithFixedDelay(
-          () -> {
-            try {
-              refreshAllCache();
-            } catch (Throwable e) {
-              LOG.error("Refresh config encounter exception: {}", e.getMessage(), e);
-            }
-          },
-          dynamicConfigRefreshInterval,
-          dynamicConfigRefreshInterval,
-          TimeUnit.MILLISECONDS);
-    } else {
-      LOG.info("Celeborn dynamic config is disabled, config can not be refreshed after updated.");
-    }
+    this.refreshCache();
+    long dynamicConfigRefreshInterval = celebornConf.dynamicConfigRefreshInterval();
+    this.configRefreshService.scheduleWithFixedDelay(
+        () -> {
+          try {
+            refreshCache();
+          } catch (Throwable e) {
+            LOG.error(
+                "Failed to refresh dynamic configs. Encounter exception: {}.", e.getMessage(), e);
+          }
+        },
+        dynamicConfigRefreshInterval,
+        dynamicConfigRefreshInterval,
+        TimeUnit.MILLISECONDS);
   }
 
   @Override
@@ -81,12 +78,22 @@ public abstract class BaseConfigServiceImpl implements ConfigService {
   }
 
   @Override
+  public List<TenantConfig> listRawTenantConfigsFromCache() {
+    return new ArrayList<>(tenantConfigAtomicReference.get().values());
+  }
+
+  @Override
   public TenantConfig getRawTenantConfigFromCache(String tenantId) {
     return tenantConfigAtomicReference.get().get(tenantId);
   }
 
   @Override
-  public TenantConfig getRawTenantUserConfig(String tenantId, String userId) {
+  public List<TenantConfig> listRawTenantUserConfigsFromCache() {
+    return new ArrayList<>(tenantUserConfigAtomicReference.get().values());
+  }
+
+  @Override
+  public TenantConfig getRawTenantUserConfigFromCache(String tenantId, String userId) {
     return tenantUserConfigAtomicReference.get().get(Pair.of(tenantId, userId));
   }
 

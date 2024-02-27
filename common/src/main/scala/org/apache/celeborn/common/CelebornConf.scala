@@ -34,7 +34,6 @@ import org.apache.celeborn.common.network.util.ByteUnit
 import org.apache.celeborn.common.protocol._
 import org.apache.celeborn.common.protocol.StorageInfo.Type
 import org.apache.celeborn.common.protocol.StorageInfo.Type.{HDD, SSD}
-import org.apache.celeborn.common.quota.DefaultQuotaManager
 import org.apache.celeborn.common.rpc.RpcTimeout
 import org.apache.celeborn.common.util.{JavaUtils, Utils}
 
@@ -367,9 +366,9 @@ class CelebornConf(loadDefaults: Boolean) extends Cloneable with Logging with Se
     }
   }
 
-  def dynamicConfigStoreBackend: String = get(DYNAMIC_CONFIG_STORE_BACKEND)
-  def dynamicConfigEnabled: Boolean = get(DYNAMIC_CONFIG_ENABLED)
+  def dynamicConfigStoreBackend: Option[String] = get(DYNAMIC_CONFIG_STORE_BACKEND)
   def dynamicConfigRefreshInterval: Long = get(DYNAMIC_CONFIG_REFRESH_INTERVAL)
+  def dynamicConfigStoreFsPath: Option[String] = get(DYNAMIC_CONFIG_STORE_FS_PATH)
   def dynamicConfigStoreDbFetchPageSize: Int = get(DYNAMIC_CONFIG_STORE_DB_FETCH_PAGE_SIZE)
   def dynamicConfigStoreDbHikariDriverClassName: String =
     get(DYNAMIC_CONFIG_STORE_DB_HIKARI_DRIVER_CLASS_NAME)
@@ -702,8 +701,8 @@ class CelebornConf(loadDefaults: Boolean) extends Cloneable with Logging with Se
   def workerShuffleCommitTimeout: Long = get(WORKER_SHUFFLE_COMMIT_TIMEOUT)
   def minPartitionSizeToEstimate: Long = get(ESTIMATED_PARTITION_SIZE_MIN_SIZE)
   def workerPartitionSorterSortPartitionTimeout: Long = get(WORKER_PARTITION_SORTER_SORT_TIMEOUT)
-  def workerPartitionSorterReservedMemoryEnabled: Boolean =
-    get(WORKER_PARTITION_SORTER_RESERVED_MEMORY_ENABLED)
+  def workerPartitionSorterPrefetchEnabled: Boolean =
+    get(WORKER_PARTITION_SORTER_PREFETCH_ENABLED)
   def workerPartitionSorterReservedMemoryPerPartition: Long =
     get(WORKER_PARTITION_SORTER_RESERVED_MEMORY_PER_PARTITION)
   def workerPartitionSorterThreads: Int =
@@ -755,8 +754,6 @@ class CelebornConf(loadDefaults: Boolean) extends Cloneable with Logging with Se
   // //////////////////////////////////////////////////////
   def quotaEnabled: Boolean = get(QUOTA_ENABLED)
   def quotaIdentityProviderClass: String = get(QUOTA_IDENTITY_PROVIDER)
-  def quotaManagerClass: String = get(QUOTA_MANAGER)
-  def quotaConfigurationPath: Option[String] = get(QUOTA_CONFIGURATION_PATH)
   def quotaUserSpecificTenant: String = get(QUOTA_USER_SPECIFIC_TENANT)
   def quotaUserSpecificUserName: String = get(QUOTA_USER_SPECIFIC_USERNAME)
 
@@ -1144,21 +1141,6 @@ class CelebornConf(loadDefaults: Boolean) extends Cloneable with Logging with Se
     }
     return authEnabled && internalPortEnabled
   }
-
-  def haMasterNodeSecuredPort(nodeId: String): Int = {
-    val key = HA_MASTER_NODE_SECURED_PORT.key.replace("<id>", nodeId)
-    getInt(key, HA_MASTER_NODE_SECURED_PORT.defaultValue.get)
-  }
-
-  def masterSecuredPort: Int = get(MASTER_SECURED_PORT)
-
-  def masterSecuredEndpoints: Array[String] =
-    get(MASTER_SECURED_ENDPOINTS).toArray.map { endpoint =>
-      Utils.parseHostPort(endpoint.replace("<localhost>", Utils.localHostName(this))) match {
-        case (host, 0) => s"$host:${HA_MASTER_NODE_SECURED_PORT.defaultValue.get}"
-        case (host, port) => s"$host:$port"
-      }
-    }
 
   // //////////////////////////////////////////////////////
   //                     Internal Port                   //
@@ -2609,12 +2591,13 @@ object CelebornConf extends Logging {
       .checkValue(v => v < Int.MaxValue, "Reserved memory per partition must be less than 2GB.")
       .createWithDefaultString("1mb")
 
-  val WORKER_PARTITION_SORTER_RESERVED_MEMORY_ENABLED: ConfigEntry[Boolean] =
-    buildConf("celeborn.worker.sortPartition.reservedMemory.enabled")
+  val WORKER_PARTITION_SORTER_PREFETCH_ENABLED: ConfigEntry[Boolean] =
+    buildConf("celeborn.worker.sortPartition.prefetch.enabled")
       .categories("worker")
-      .doc(s"When true, partition sorter will reserve memory configured by `${WORKER_PARTITION_SORTER_RESERVED_MEMORY_PER_PARTITION.key}` to allocate a block of memory for warming up " +
-        "while sorting a shuffle file off-heap with page cache for non-hdfs files." +
-        "Otherwise, partition sorter seeks to position of each block and does not warm up for non-hdfs files.")
+      .doc("When true, partition sorter will prefetch the original partition files to page cache " +
+        s"and reserve memory configured by `${WORKER_PARTITION_SORTER_RESERVED_MEMORY_PER_PARTITION.key}` " +
+        "to allocate a block of memory for prefetching while sorting a shuffle file off-heap with page cache for non-hdfs files. " +
+        "Otherwise, partition sorter seeks to position of each block and does not prefetch for non-hdfs files.")
       .version("0.5.0")
       .booleanConf
       .createWithDefault(true)
@@ -3004,12 +2987,12 @@ object CelebornConf extends Logging {
   val WORKER_GRACEFUL_SHUTDOWN_RECOVER_DB_BACKEND: ConfigEntry[String] =
     buildConf("celeborn.worker.graceful.shutdown.recoverDbBackend")
       .categories("worker")
-      .doc("Specifies a disk-based store used in local db. LEVELDB or ROCKSDB.")
+      .doc("Specifies a disk-based store used in local db. ROCKSDB or LEVELDB (deprecated).")
       .version("0.4.0")
       .stringConf
       .transform(_.toUpperCase(Locale.ROOT))
       .checkValues(Set("LEVELDB", "ROCKSDB"))
-      .createWithDefault("LEVELDB")
+      .createWithDefault("ROCKSDB")
 
   val WORKER_PARTITION_SORTER_SHUTDOWN_TIMEOUT: ConfigEntry[Long] =
     buildConf("celeborn.worker.graceful.shutdown.partitionSorter.shutdownTimeout")
@@ -4164,17 +4147,20 @@ object CelebornConf extends Logging {
 
   val QUOTA_ENABLED: ConfigEntry[Boolean] =
     buildConf("celeborn.quota.enabled")
-      .categories("quota")
-      .doc("When true, before registering shuffle, LifecycleManager should check " +
-        "if current user have enough quota space, if cluster don't have enough " +
-        "quota space for current user, fallback to Spark's default shuffle")
+      .categories("quota", "master", "client")
+      .doc(
+        "When Master side sets to true, the master will enable to check the quota via QuotaManager. " +
+          "When Client side sets to true, LifecycleManager will request Master side to check " +
+          "whether the current user has enough quota before registration of shuffle. " +
+          "Fallback to the default shuffle service of Spark when Master side checks that " +
+          "there is no enough quota for current user.")
       .version("0.2.0")
       .booleanConf
       .createWithDefault(true)
 
   val QUOTA_IDENTITY_PROVIDER: ConfigEntry[String] =
     buildConf("celeborn.quota.identity.provider")
-      .categories("quota")
+      .categories("quota", "client")
       .doc(s"IdentityProvider class name. Default class is " +
         s"`${classOf[DefaultIdentityProvider].getName}`. " +
         s"Optional values: " +
@@ -4186,7 +4172,7 @@ object CelebornConf extends Logging {
 
   val QUOTA_USER_SPECIFIC_TENANT: ConfigEntry[String] =
     buildConf("celeborn.quota.identity.user-specific.tenant")
-      .categories("quota")
+      .categories("quota", "client")
       .doc(s"Tenant id if celeborn.quota.identity.provider is org.apache.celeborn.common.identity.DefaultIdentityProvider.")
       .version("0.3.0")
       .stringConf
@@ -4194,28 +4180,47 @@ object CelebornConf extends Logging {
 
   val QUOTA_USER_SPECIFIC_USERNAME: ConfigEntry[String] =
     buildConf("celeborn.quota.identity.user-specific.userName")
-      .categories("quota")
+      .categories("quota", "client")
       .doc(s"User name if celeborn.quota.identity.provider is org.apache.celeborn.common.identity.DefaultIdentityProvider.")
       .version("0.3.0")
       .stringConf
       .createWithDefault(IdentityProvider.DEFAULT_USERNAME)
 
-  val QUOTA_MANAGER: ConfigEntry[String] =
-    buildConf("celeborn.quota.manager")
+  val QUOTA_DISK_BYTES_WRITTEN: ConfigEntry[Long] =
+    buildConf("celeborn.quota.tenant.diskBytesWritten")
       .categories("quota")
-      .doc(s"QuotaManger class name. Default class is `${classOf[DefaultQuotaManager].getName}`.")
-      .version("0.2.0")
-      .stringConf
-      .createWithDefault(classOf[DefaultQuotaManager].getName)
+      .dynamic
+      .doc("Quota dynamic configuration for written disk bytes.")
+      .version("0.5.0")
+      .longConf
+      .createWithDefault(Long.MaxValue)
 
-  val QUOTA_CONFIGURATION_PATH: OptionalConfigEntry[String] =
-    buildConf("celeborn.quota.configuration.path")
+  val QUOTA_DISK_FILE_COUNT: ConfigEntry[Long] =
+    buildConf("celeborn.quota.tenant.diskFileCount")
       .categories("quota")
-      .doc("Quota configuration file path. The file format should be yaml. Quota configuration file template can be " +
-        "found under conf directory.")
-      .version("0.2.0")
-      .stringConf
-      .createOptional
+      .dynamic
+      .doc("Quota dynamic configuration for written disk file count.")
+      .version("0.5.0")
+      .longConf
+      .createWithDefault(Long.MaxValue)
+
+  val QUOTA_HDFS_BYTES_WRITTEN: ConfigEntry[Long] =
+    buildConf("celeborn.quota.tenant.hdfsBytesWritten")
+      .categories("quota")
+      .dynamic
+      .doc("Quota dynamic configuration for written hdfs bytes.")
+      .version("0.5.0")
+      .longConf
+      .createWithDefault(Long.MaxValue)
+
+  val QUOTA_HDFS_FILE_COUNT: ConfigEntry[Long] =
+    buildConf("celeborn.quota.tenant.hdfsFileCount")
+      .categories("quota")
+      .dynamic
+      .doc("Quota dynamic configuration for written hdfs file count.")
+      .version("0.5.0")
+      .longConf
+      .createWithDefault(Long.MaxValue)
 
   val COLUMNAR_SHUFFLE_ENABLED: ConfigEntry[Boolean] =
     buildConf("celeborn.columnarShuffle.enabled")
@@ -4425,23 +4430,16 @@ object CelebornConf extends Logging {
       .stringConf
       .createOptional
 
-  val DYNAMIC_CONFIG_STORE_BACKEND: ConfigEntry[String] =
+  val DYNAMIC_CONFIG_STORE_BACKEND: OptionalConfigEntry[String] =
     buildConf("celeborn.dynamicConfig.store.backend")
       .categories("master", "worker")
-      .doc("Store backend for dynamic config service. Available options: FS, DB.")
+      .doc("Store backend for dynamic config service. Available options: FS, DB. " +
+        "If not provided, it means that dynamic configuration is disabled.")
       .version("0.4.0")
       .stringConf
       .transform(_.toUpperCase(Locale.ROOT))
       .checkValues(Set("FS", "DB"))
-      .createWithDefault("FS")
-
-  val DYNAMIC_CONFIG_ENABLED: ConfigEntry[Boolean] =
-    buildConf("celeborn.dynamicConfig.enabled")
-      .categories("master", "worker")
-      .version("0.5.0")
-      .doc("Whether to enable dynamic configuration.")
-      .booleanConf
-      .createWithDefault(false)
+      .createOptional
 
   val DYNAMIC_CONFIG_REFRESH_INTERVAL: ConfigEntry[Long] =
     buildConf("celeborn.dynamicConfig.refresh.interval")
@@ -4450,6 +4448,16 @@ object CelebornConf extends Logging {
       .doc("Interval for refreshing the corresponding dynamic config periodically.")
       .timeConf(TimeUnit.MILLISECONDS)
       .createWithDefaultString("120s")
+
+  val DYNAMIC_CONFIG_STORE_FS_PATH: OptionalConfigEntry[String] =
+    buildConf("celeborn.dynamicConfig.store.fs.path")
+      .categories("master", "worker")
+      .version("0.5.0")
+      .doc(
+        "The path of dynamic config file for fs store backend. The file format should be yaml. " +
+          "The default path is `${CELEBORN_CONF_DIR}/dynamicConfig.yaml`.")
+      .stringConf
+      .createOptional
 
   val DYNAMIC_CONFIG_STORE_DB_FETCH_PAGE_SIZE: ConfigEntry[Int] =
     buildConf("celeborn.dynamicConfig.store.db.fetch.pageSize")
@@ -4600,39 +4608,5 @@ object CelebornConf extends Logging {
       .doc("Interval for refreshing the node rack information periodically.")
       .timeConf(TimeUnit.MILLISECONDS)
       .createWithDefaultString("30s")
-
-  val MASTER_SECURED_PORT: ConfigEntry[Int] =
-    buildConf("celeborn.master.secured.port")
-      .categories("master", "auth")
-      .version("0.5.0")
-      .doc(
-        "Secured port on the master where clients connect.")
-      .intConf
-      .checkValue(p => p >= 1024 && p < 65535, "Invalid port")
-      .createWithDefault(19097)
-
-  val HA_MASTER_NODE_SECURED_PORT: ConfigEntry[Int] =
-    buildConf("celeborn.master.ha.node.<id>.secured.port")
-      .categories("ha", "auth")
-      .doc(
-        "Secured port for the clients to bind to a master node <id> in HA mode.")
-      .version("0.5.0")
-      .intConf
-      .checkValue(p => p >= 1024 && p < 65535, "Invalid port")
-      .createWithDefault(19097)
-
-  val MASTER_SECURED_ENDPOINTS: ConfigEntry[Seq[String]] =
-    buildConf("celeborn.master.secured.endpoints")
-      .categories("client", "auth")
-      .doc("Endpoints of master nodes for celeborn client to connect for secured communication, allowed pattern " +
-        "is: `<host1>:<port1>[,<host2>:<port2>]*`, e.g. `clb1:19097,clb2:19097,clb3:19097`. " +
-        "If the port is omitted, 19097 will be used.")
-      .version("0.5.0")
-      .stringConf
-      .toSequence
-      .checkValue(
-        endpoints => endpoints.map(_ => Try(Utils.parseHostPort(_))).forall(_.isSuccess),
-        "Allowed pattern is: `<host1>:<port1>[,<host2>:<port2>]*`")
-      .createWithDefaultString(s"<localhost>:19097")
 
 }
